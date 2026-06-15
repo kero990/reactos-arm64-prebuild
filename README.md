@@ -21,9 +21,6 @@ This repository is dedicated to keeping up with the hard work of contributor Ahm
 
 ### 🚀 Features
 
-* **Weekly Polling (Once a week)**: Runs an automated update check every Sunday to save GitHub Actions runner quota.
-* **Single-Release Policy**: To keep the repository clean, each successful build deletes the previous release and tag, ensuring only **one** up-to-date release with the latest `bootcd.iso` and `livecd.iso` is active.
-* **No Changes, No Action**: If no upstream updates are detected during the weekly check, the current release remains completely untouched.
 * **Native ARM64 Compilation**: Built on native GitHub `ubuntu-24.04-arm` runners.
 
 ### 💾 How to Download
@@ -51,8 +48,6 @@ Testing the latest ARM64 build is straightforward:
 
 ### 🚀 项目特性
 
-* **每周轮询一次（节省额度）**：系统固定于每周日执行一次更新检测。如果检测到这一周内没有新代码推入，工作流将直接优雅退出，**保持现有 Release 原状**。
-* **单 Release 策略**：为了保证仓库不产生历史堆积，每次编译成功后，会自动物理删除旧的 Release 及对应的 Git Tag，确保只保留**一个**包含最新镜像的 Release。
 * **原生 ARM64 编译**：基于 GitHub 官方提供的原生 `ubuntu-24.04-arm` 运行器，无需架构模拟，构建高效稳定。
 
 ### 💾 如何下载体验
