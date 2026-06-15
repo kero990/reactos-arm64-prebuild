@@ -1,26 +1,52 @@
 name: reactos-arm64-prebuild
 
 on:
-  push:
-    branches: [ "master", "main" ]
-  pull_request:
-    branches: [ "master", "main" ]
-  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'     # 每周日 00:00 (UTC) 自动运行一次检查（一周最多检查一次）
+  workflow_dispatch:        # 支持在网页上手动触发构建
 
 permissions:
-  contents: write  # 赋予创建 Release 和上传附件的写入权限
+  contents: write  # 赋予创建、删除、修改 Release 和 Tag 的写入权限
 
 jobs:
+  check-updates:
+    name: Check Upstream Updates
+    runs-on: ubuntu-latest  # 使用标准轻量级运行器执行检查，节省额度
+    outputs:
+      skip_build: ${{ steps.compare_shas.outputs.skip_build }}
+    steps:
+      - name: Fetch and Compare Commit SHAs
+        id: compare_shas
+        run: |
+          # 获取上游仓库默认分支的最新 Commit SHA
+          UPSTREAM_SHA=$(curl -s "https://api.github.com/repos/ahmedarif193/reactos/commits" | jq -r '.[0].sha')
+          echo "Latest upstream commit SHA: $UPSTREAM_SHA"
+          
+          # 获取您自己仓库中唯一（最新）的 Release Tag
+          LATEST_RELEASE_TAG=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r '.tag_name // "none"')
+          echo "Your current release tag: $LATEST_RELEASE_TAG"
+          
+          # 判断：若上游最新 SHA 已经体现在您当前的 Tag 中，且不是手动触发，则跳过后续构建
+          if [[ "$LATEST_RELEASE_TAG" == *"$UPSTREAM_SHA"* && "${{ github.event_name }}" != "workflow_dispatch" ]]; then
+            echo "No new commits upstream since the last prebuild. Keeping the current release as-is."
+            echo "skip_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "New commits detected or manually triggered. Proceeding with build."
+            echo "skip_build=false" >> $GITHUB_OUTPUT
+          fi
+
   build:
     name: Build ReactOS ARM64
-    runs-on: ubuntu-24.04-arm  # 使用 GitHub 托管的原生 ARM64 运行器
+    needs: check-updates
+    if: needs.check-updates.outputs.skip_build != 'true' # 仅在上游有更新时才执行
+    runs-on: ubuntu-24.04-arm  # 调用原生 ARM64 运行器
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          repository: 'ahmedarif193/reactos'  # 如果您是在自己的 Fork 仓库中运行此 Action，可以删除此行
-          submodules: 'recursive'             # 递归克隆所有子模块
+          repository: 'ahmedarif193/reactos'
+          submodules: 'recursive'
 
       - name: Install System Dependencies
         run: |
@@ -29,18 +55,12 @@ jobs:
 
       - name: Install RosBE (ReactOS Build Environment)
         run: |
-          # 运行在用户空间下，默认安装至当前用户主目录下的 $HOME/.local/opt/rosbe
           curl -fsSL https://raw.githubusercontent.com/ahmedarif193/winget-rosbe/main/rosbe-unix-bootstrap.sh | sh
 
       - name: Export RosBE Environment Variables
         run: |
-          # 定义 RosBE 在 runner 用户主目录下的路径
           ROSBE_ROOT="$HOME/.local/opt/rosbe"
-          
-          # 将 ROSBE_ROOT 写入全局环境变量
           echo "ROSBE_ROOT=$ROSBE_ROOT" >> $GITHUB_ENV
-          
-          # 将原 rosbe-env.sh 脚本中 prepend 的三个工具链路径直接写入 GitHub Actions 的全局 PATH
           echo "$ROSBE_ROOT/llvm-mingw/bin" >> $GITHUB_PATH
           echo "$ROSBE_ROOT/mingw-gcc/i686-w64-mingw32/bin" >> $GITHUB_PATH
           echo "$ROSBE_ROOT/mingw-gcc/x86_64-w64-mingw32/bin" >> $GITHUB_PATH
@@ -56,23 +76,38 @@ jobs:
           ninja bootcd
           ninja livecd
 
+      - name: Delete Old Releases and Tags
+        run: |
+          # 获取当前仓库现存的所有 Release 标签，并进行物理删除（同时清理远程 Git Tag）
+          tags=$(gh release list --json tagName -q '.[].tagName' 2>/dev/null || true)
+          if [ -n "$tags" ]; then
+            echo "$tags" | while read -r tag; do
+              if [ -n "$tag" ]; then
+                echo "Deleting old release and its remote tag: $tag"
+                gh release delete "$tag" --yes --cleanup-tag
+              fi
+            done
+          else
+            echo "No existing releases found. Proceeding directly."
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Determine Release Info
         id: release_info
-        if: github.event_name != 'pull_request'
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
           COMMIT_DATE=$(git log -1 --format=%cd --date=format:'%Y%m%d%H%M')
           echo "tag=arm64-${COMMIT_DATE}-${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "name=ReactOS ARM64 Prebuild (${COMMIT_DATE} - ${SHORT_SHA})" >> $GITHUB_OUTPUT
 
-      - name: Create GitHub Release
+      - name: Create New GitHub Release
         uses: softprops/action-gh-release@v2
-        if: github.event_name != 'pull_request'
         with:
           tag_name: ${{ steps.release_info.outputs.tag }}
           name: ${{ steps.release_info.outputs.name }}
           body: |
-            ### ReactOS ARM64 Prebuild Image
+            ### ReactOS ARM64 Prebuild Image (Latest Successful Build)
             - **Upstream Commit**: [${{ steps.release_info.outputs.tag }}](https://github.com/ahmedarif193/reactos/commit/${{ github.sha }})
             - **Target**: Clang arm64 release
           files: |
