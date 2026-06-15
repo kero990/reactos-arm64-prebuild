@@ -1,0 +1,82 @@
+name: reactos-arm64-prebuild
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # 赋予创建 Release 和上传附件的写入权限
+
+jobs:
+  build:
+    name: Build ReactOS ARM64
+    runs-on: ubuntu-24.04-arm  # 使用 GitHub 托管的原生 ARM64 运行器
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: 'ahmedarif193/reactos'  # 如果您是在自己的 Fork 仓库中运行此 Action，可以删除此行
+          submodules: 'recursive'             # 递归克隆所有子模块
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake bison flex meson ninja-build
+
+      - name: Install RosBE (ReactOS Build Environment)
+        run: |
+          # 运行在用户空间下，默认安装至当前用户主目录下的 $HOME/.local/opt/rosbe
+          curl -fsSL https://raw.githubusercontent.com/ahmedarif193/winget-rosbe/main/rosbe-unix-bootstrap.sh | sh
+
+      - name: Export RosBE Environment Variables
+        run: |
+          # 定义 RosBE 在 runner 用户主目录下的路径
+          ROSBE_ROOT="$HOME/.local/opt/rosbe"
+          
+          # 将 ROSBE_ROOT 写入全局环境变量
+          echo "ROSBE_ROOT=$ROSBE_ROOT" >> $GITHUB_ENV
+          
+          # 将原 rosbe-env.sh 脚本中 prepend 的三个工具链路径直接写入 GitHub Actions 的全局 PATH
+          echo "$ROSBE_ROOT/llvm-mingw/bin" >> $GITHUB_PATH
+          echo "$ROSBE_ROOT/mingw-gcc/i686-w64-mingw32/bin" >> $GITHUB_PATH
+          echo "$ROSBE_ROOT/mingw-gcc/x86_64-w64-mingw32/bin" >> $GITHUB_PATH
+
+      - name: Configure ReactOS ARM64
+        run: |
+          ./configure.sh --clang -a arm64 --release
+
+      - name: Build ReactOS ISOs
+        run: |
+          cd output-Clang-arm64-release
+          ninja
+          ninja bootcd
+          ninja livecd
+
+      - name: Determine Release Info
+        id: release_info
+        if: github.event_name != 'pull_request'
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          COMMIT_DATE=$(git log -1 --format=%cd --date=format:'%Y%m%d%H%M')
+          echo "tag=arm64-${COMMIT_DATE}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "name=ReactOS ARM64 Prebuild (${COMMIT_DATE} - ${SHORT_SHA})" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: github.event_name != 'pull_request'
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag }}
+          name: ${{ steps.release_info.outputs.name }}
+          body: |
+            ### ReactOS ARM64 Prebuild Image
+            - **Upstream Commit**: [${{ steps.release_info.outputs.tag }}](https://github.com/ahmedarif193/reactos/commit/${{ github.sha }})
+            - **Target**: Clang arm64 release
+          files: |
+            output-Clang-arm64-release/bootcd.iso
+            output-Clang-arm64-release/livecd.iso
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
